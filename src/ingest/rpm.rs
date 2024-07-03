@@ -1,4 +1,5 @@
 use crate::args;
+use crate::chksums::{Checksums, Hasher};
 use crate::db;
 use crate::errors::*;
 use crate::ingest;
@@ -41,31 +42,40 @@ pub async fn read_routine<R: AsyncRead + Unpin>(
         };
 
         // TODO: find a better solution for this, can we just autodetect all regardless of file name?
-        let compression = if filename.ends_with(".tar.gz")
+        let archive_w_compression = if filename.ends_with(".tar.gz")
             || filename.ends_with(".tgz")
             || filename.ends_with(".crate")
         {
-            Some("gz")
+            Some(Some("gz"))
         } else if filename.ends_with(".tar.xz") {
-            Some("xz")
+            Some(Some("xz"))
         } else if filename.ends_with(".tar.bz2") {
-            Some("bz2")
+            Some(Some("bz2"))
         } else if filename.ends_with(".tar") {
-            None
+            Some(None)
         } else {
-            continue;
+            None;
         };
 
-        // in case of chromium, calculate the checksum but do not import
-        let tar_db = if filename.starts_with("chromium-") {
-            None
-        } else {
-            Some(db)
+        let chksum = match archive_w_compression {
+            Some(compression) => {
+                // in case of chromium, calculate the checksum but do not import
+                let tar_db = if filename.starts_with("chromium-") {
+                    None
+                } else {
+                    Some(db)
+                };
+                let summary = ingest::tar::stream_data(tar_db, entry, compression).await?;
+                summary.outer_digests.sha256.clone()
+            }
+            None => {
+                let hasher = Hasher::new(entry).await?;
+                hasher.digests.sha256.clone()
+            }
         };
-        let summary = ingest::tar::stream_data(tar_db, entry, compression).await?;
 
         let r = db::Ref {
-            chksum: summary.outer_digests.sha256.clone(),
+            chksum: chksum,
             vendor: vendor.to_string(),
             package: package.to_string(),
             version: version.to_string(),
